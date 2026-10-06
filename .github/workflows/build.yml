@@ -1,0 +1,40 @@
+name: Build validation
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Record proof
+        run: |
+          node --version > dist/build-proof.txt
+          npm --version >> dist/build-proof.txt
+          npm ls react react-dom vite @vitejs/plugin-react --depth=0 >> dist/build-proof.txt
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vite-dist
+          path: dist/
+          if-no-files-found: error
