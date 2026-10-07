@@ -1,23 +1,19 @@
 {
-  "name": "telemetry-chart-lab",
+  "name": "shadercn-orb01-servus",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "npx shadcn@latest add chart -y -o && vite build"
+    "prebuild": "npx shadcn@latest add https://shadercn.run/r/orb-01.json --yes",
+    "build": "vite build"
   },
   "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "^7.1.9",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "recharts": "^3.0.0",
-    "cn": "^0.3.1"
+    "tailwindcss": "^4.1.14",
+    "@tailwindcss/vite": "^4.1.14"
   },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^5.0.4",
-    "@tailwindcss/vite": "^4.1.0",
-    "@types/node": "^24.0.0",
-    "tailwindcss": "^4.1.0",
-    "vite": "^7.1.7"
-  }
+  "devDependencies": {}
 }
