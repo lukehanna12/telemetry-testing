@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "prebuild": "npx shadcn@4.20.0 add https://shadercn.run/r/orb-01.json --yes",
+    "prebuild": "node scripts/install-shadercn.mjs",
     "build": "vite build"
   },
   "dependencies": {
