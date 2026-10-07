@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { OrbPreview } from "@/components/ui/orb-01";
+import { OrbPreview } from "@/components/orbs/orb-01";
 import "./index.css";
 
 function App() {
