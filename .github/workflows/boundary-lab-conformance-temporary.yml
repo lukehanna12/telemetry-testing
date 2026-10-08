@@ -144,7 +144,27 @@ jobs:
               const bad=await authorize(mode,mode==="static"?"boundary-lab-static":mode==="dcr"?dcrId:"https://chatgpt.com/oauth/client.json","V".repeat(48),{scope:"lab.read forbidden.test"});
               record(mode+" unrecognized OAuth scopes rejected",bad.status===400,"HTTP "+bad.status);
             }
-            const passes=cases.filter(x=>x.ok).length,failed=cases.filter(x=>!x.ok);
+  
+            // Additional authorization-server and resource-audience negative cases.
+            const syntheticCimdToken="boundary-audit-cimd-xaud-20261008-p6qs7";
+            const ownCimd=await mcp("cimd","tools/call",{name:"lab_connection_info",arguments:{}},syntheticCimdToken);
+            check("CIMD synthetic audience token accepted only by CIMD",ownCimd,x=>x.status===200&&x.json?.result?.structuredContent?.authenticated===true);
+            for(const other of ["static","dcr"]){
+              const cross=await mcp(other,"tools/call",{name:"lab_connection_info",arguments:{}},syntheticCimdToken);
+              check("CIMD token denied at "+other,cross,x=>x.status===200&&x.json?.result?.isError===true);
+            }
+            for(const mode of modes){
+              const wrongType=await authorize(mode,mode==="static"?"boundary-lab-static":mode==="dcr"?dcrId:"https://chatgpt.com/oauth/client.json","Q".repeat(50),{response_type:"token"});
+              record(mode+" rejects authorization response type token",wrongType.status===400,"HTTP "+wrongType.status);
+              const badRedirect=await authorize(mode,mode==="static"?"boundary-lab-static":mode==="dcr"?dcrId:"https://chatgpt.com/oauth/client.json","Q".repeat(50),{redirect_uri:"https://evil.example/collect"});
+              record(mode+" denies unauthorized redirect host",badRedirect.status===400,"HTTP "+badRedirect.status);
+            }
+            const badDcrScopes=await call("/lab/dcr/oauth/register","POST",{token_endpoint_auth_method:"none",scope:"lab.read forbidden.test",redirect_uris:["https://chatgpt.com/connector_platform_oauth_redirect"]});
+            check("DCR rejects unsupported requested registration scope",badDcrScopes,x=>x.status===400&&x.json?.error==="invalid_client_metadata");
+            const badAssertionType=await call("/lab/cimd/oauth/token","POST",new URLSearchParams({grant_type:"authorization_code",client_id:"https://chatgpt.com/oauth/client.json",code:"x",client_assertion_type:"invalid-type",client_assertion:"bad.jwt.signature"}));
+            check("CIMD rejects invalid client assertion",badAssertionType,x=>x.status===401);
+
+          const passes=cases.filter(x=>x.ok).length,failed=cases.filter(x=>!x.ok);
             console.log("VALIDATION_SUMMARY "+JSON.stringify({total:cases.length,passed:passes,failed:failed.map(x=>({name:x.name,details:x.details}))}));
             if(failed.length)process.exitCode=1;
           }
