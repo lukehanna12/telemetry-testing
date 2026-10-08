@@ -56,7 +56,8 @@ jobs:
            check(await buttons.count()===33,mode+" all 33 interactive probes retained");
            const ids=await buttons.evaluateAll(nodes=>nodes.map(x=>x.dataset.a));
            check(new Set(ids).size===33,mode+" probe IDs unique");
-           check((await page.evaluate(()=>window.__posted)).some(x=>x.method==="ui/initialize"),mode+" MCP Apps initialize sent");
+           console.log("UI_DIAGNOSTIC "+JSON.stringify({mode,posted:await page.evaluate(()=>window.__posted),errors,htmlEnd:html.slice(-300),inlineScripts:await page.locator("script").count(),status:await page.locator("#status").innerText()}));
+ check((await page.evaluate(()=>window.__posted)).some(x=>x.method==="ui/initialize"),mode+" MCP Apps initialize sent");
            await page.evaluate(()=>window.postMessage({jsonrpc:"2.0",id:1,result:{protocolVersion:"2025-11-21",hostContext:{theme:"dark",locale:"en-US"}}},"*"));
            await page.waitForFunction(()=>document.documentElement.dataset.theme==="dark"&&document.getElementById("status").textContent==="Initialized",{timeout:3000});
            check(await page.locator("#connection-name").innerText()===mode.toUpperCase(),mode+" mode label matches route");
