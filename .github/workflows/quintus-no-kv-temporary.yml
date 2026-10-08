@@ -1,0 +1,39 @@
+name: Temporary Quintus no-KV integration checks
+on:
+  push:
+    paths:
+      - '.github/workflows/quintus-no-kv-temporary.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify protocol and authorization
+        run: |
+          node --input-type=module <<'NODE'
+          
+          const host="https://quintus.colosseum.workers.dev"; let ok=0; const assert=(value,label)=>{if(!value){console.error("FAIL "+label);process.exitCode=1}else {console.log("PASS "+label);ok++}};
+          const call=async(method,params={})=>{const r=await fetch(host+"/mcp",{method:"POST",headers:{"content-type":"application/json","mcp-protocol-version":"2026-07-28"},body:JSON.stringify({jsonrpc:"2.0",id:7,method,params})});return {status:r.status,data:await r.json()}};
+          const root=await fetch(host+"/");const about=await root.json();assert(root.ok&&about.kv===false&&about.version==="0.3.1","root and KV-free version");
+          const health=await fetch(host+"/health");const h=await health.json();assert(health.ok&&h.kv===false,"health independent of KV");
+          const discovery=await call("server/discover",{_meta:{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{name:"quintus-check",version:"1.0"},"io.modelcontextprotocol/clientCapabilities":{}}});const d=discovery.data.result;assert(discovery.status===200&&d.supportedVersions.includes("2026-07-28")&&d.resultType==="complete","modern MCP discovery");
+          assert(d.instructions?.includes("Quintus")&&d.capabilities?.tools&&!d.instructions.includes("prompt_receipt"),"instructions available without receipt");
+          const list=await call("tools/list");const ts=list.data.result.tools||[];assert(ts.length===5&&ts.every(x=>x.inputSchema?.type==="object"),"five public validated tool schemas");
+          assert(!ts.some(x=>x.name.startsWith("workspace.")||x.name==="build.prepare"),"private tools excluded from anonymous discovery");
+          assert(!ts.some(x=>JSON.stringify(x).includes("prompt_receipt")),"no prompt receipt in tool descriptions");
+          const read=await call("tools/call",{name:"catalog.projects",arguments:{}});assert(Array.isArray(read.data.result?.structuredContent?.projects)&&!read.data.result?.isError,"read-only catalog succeeds without KV");
+          const state=await call("tools/call",{name:"sync.status",arguments:{}});assert(state.data.result.structuredContent?.kv===false&&!state.data.result?.isError,"read-only status succeeds");
+          const write=await call("tools/call",{name:"workspace.put",arguments:{workspace:"quintus-security-test",path:"test.txt",content:"should-never-be-written"}});assert(write.data.result?.isError===true&&write.data.result?.structuredContent?.error==="owner_authorization_required","unauthenticated write rejected before DO");
+          const privateRead=await call("tools/call",{name:"workspace.export",arguments:{workspace:"default"}});assert(privateRead.data.result?.isError===true&&privateRead.data.result?.structuredContent?.error==="owner_authorization_required","unauthenticated private export rejected");
+          const guide=await call("resources/read",{uri:"quintus://guide"});assert(guide.data.result?.contents?.[0]?.text.includes("Quintus"),"targeted guide resource works");
+          const prompts=await call("prompts/list");assert(prompts.data.result?.prompts?.length===0,"no generic prompts required");
+          const invalid=await fetch(host+"/mcp",{method:"POST",headers:{"content-type":"application/json","mcp-protocol-version":"1900-01-01"},body:JSON.stringify({jsonrpc:"2.0",id:5,method:"tools/list",params:{}})});assert(invalid.status===400,"unsupported MCP version rejected");
+          console.log("QUINTUS_SMOKE_SUMMARY "+JSON.stringify({passed:ok,failed:process.exitCode?1:0,endpoint:host}));
+          
+          NODE
