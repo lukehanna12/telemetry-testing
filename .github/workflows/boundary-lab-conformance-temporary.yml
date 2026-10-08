@@ -1,0 +1,152 @@
+name: Temporary Boundary Lab Conformance
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: HTTP protocol security matrix
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const host = "https://chatgpt-mcp-boundary-lab.colosseum.workers.dev";
+          const modes = ["static","dcr","cimd"];
+          const cases = [];
+          let dcrId = null, issued = {};
+          const encoder = new TextEncoder();
+          function record(name, ok, details = "") {cases.push({name,ok,details}); console.log((ok?"PASS ":"FAIL ")+name+(details?" — "+details:"")); }
+          async function call(path, method="GET", data, headers={}) {
+           const h = {...headers}; let body;
+           if (data!==undefined && data!==null) {
+             if (typeof data==="string") body=data;
+             else if (data instanceof URLSearchParams) {body=data.toString();h["content-type"]="application/x-www-form-urlencoded";}
+             else {body=JSON.stringify(data);h["content-type"]="application/json";}
+           }
+           try {const r=await fetch(host+path,{method,body,headers:h,redirect:"manual",signal:AbortSignal.timeout(15000)});
+           const ct=r.headers.get("content-type")||"";let raw=await r.text();let parsed;
+           try{parsed=JSON.parse(raw)}catch{parsed=null}
+           return {status:r.status,headers:r.headers,json:parsed,text:raw.slice(0,1000),ct};}
+           catch(e){return {status:0,error:String(e)};}
+          }
+          function check(name, got, pred, detail=""){record(name,!!pred(got),detail||("HTTP "+got.status));}
+          function rpc(method,params={}) {return {jsonrpc:"2.0",id:17,method,params};}
+          async function mcp(mode,method,params={},auth="") {return call("/lab/"+mode+"/mcp","POST",rpc(method,params),auth?{"authorization":"Bearer "+auth}:{});}
+          async function sha256b64url(data){const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",encoder.encode(data)));return Buffer.from(digest).toString("base64url");}
+          async function authorize(mode,client,verifier,adjust={}) {
+            const form=new URLSearchParams({response_type:"code",client_id:client,redirect_uri:"https://chatgpt.com/connector_platform_oauth_redirect",scope:"lab.read",resource:host+"/lab/"+mode+"/mcp",state:"boundary-synthetic-verify",code_challenge:await sha256b64url(verifier),code_challenge_method:"S256",...adjust});
+            const r=await call("/lab/"+mode+"/oauth/authorize","POST",form);
+            const location=r.headers?.get("location")||"";
+            let code=null;try{code=new URL(location).searchParams.get("code")}catch{}
+            return {status:r.status,code,location:!!location};
+          }
+          async function exchange(mode,client,code,verifier,adjust={}){
+           const form=new URLSearchParams({grant_type:"authorization_code",client_id:client,code,redirect_uri:"https://chatgpt.com/connector_platform_oauth_redirect",code_verifier:verifier,resource:host+"/lab/"+mode+"/mcp",...adjust});
+           return call("/lab/"+mode+"/oauth/token","POST",form);
+          }
+          async function run(){
+            const baseline=await call("/health");
+            check("Original /health remains live",baseline,x=>x.status===200&&x.json?.ok===true);
+            const original=await call("/mcp","POST",rpc("ping"));
+            check("Original /mcp still handles RPC",original,x=>x.status===200&&x.json?.result);
+            for(const mode of modes){
+              const base="/lab/"+mode;
+              const health=await call(base+"/health");
+              check(mode+" health",health,x=>x.status===200&&x.json?.mode===mode);
+              const prm=await call("/.well-known/oauth-protected-resource"+base+"/mcp");
+              check(mode+" RFC9728 PRM",prm,x=>x.status===200&&x.json?.resource===host+base+"/mcp"&&x.json?.authorization_servers?.[0]===host+base);
+              const as=await call("/.well-known/oauth-authorization-server"+base);
+              check(mode+" authorization server metadata",as,x=>x.status===200&&x.json?.issuer===host+base&&x.json?.token_endpoint===host+base+"/oauth/token");
+              check(mode+" auth-method advertised",as,x=>x.json?.token_endpoint_auth_methods_supported?.includes(mode==="cimd"?"private_key_jwt":"none"));
+              check(mode+" CIMD metadata capability",as,x=>x.json?.client_id_metadata_document_supported===(mode==="cimd"));
+              check(mode+" DCR registration discovery",as,x=>(!!x.json?.registration_endpoint)===(mode==="dcr"));
+              const discover=await mcp(mode,"server/discover");
+              check(mode+" server/discover",discover,x=>x.status===200&&x.json?.result?.supportedVersions?.includes("2026-07-28"));
+              const list=await mcp(mode,"tools/list");
+              check(mode+" tools/list",list,x=>x.status===200&&x.json?.result?.tools?.some(t=>t.name==="lab_connection_info"));
+              const anon=await mcp(mode,"tools/call",{name:"lab_noauth",arguments:{}});
+              check(mode+" anonymous tool",anon,x=>x.status===200&&x.json?.result?.structuredContent?.authenticated===false);
+              const guarded=await mcp(mode,"tools/call",{name:"lab_connection_info",arguments:{}});
+              check(mode+" unauthenticated protected tool denied",guarded,x=>x.status===200&&x.json?.result?.isError===true&&Array.isArray(x.json?.result?._meta?.["mcp/www_authenticate"]));
+              const bad=await mcp(mode,"tools/call",{name:"lab_connection_info",arguments:{}},"bogus-test-token");
+              check(mode+" invalid bearer denied",bad,x=>x.status===200&&x.json?.result?.isError===true);
+              const ping=await mcp(mode,"ping");
+              check(mode+" ping",ping,x=>x.status===200&&x.json?.result);
+              const badjson=await call(base+"/mcp","POST","{malformed",{"content-type":"application/json"});
+              check(mode+" malformed JSON rejected",badjson,x=>x.status===400&&x.json?.error?.code===-32700);
+              const opts=await call(base+"/mcp","OPTIONS");
+              check(mode+" CORS preflight",opts,x=>x.status===204);
+              const get=await call(base+"/mcp");
+              check(mode+" invalid GET method",get,x=>x.status===405);
+              const reg=await call(base+"/oauth/register","POST",{token_endpoint_auth_method:"none",redirect_uris:["https://chatgpt.com/connector_platform_oauth_redirect"]});
+              if(mode==="dcr"){dcrId=reg.json?.client_id;check("DCR actual registration",reg,x=>x.status===201&&typeof x.json?.client_id==="string"&&x.json?.token_endpoint_auth_method==="none");}
+              else check(mode+" registration forbidden",reg,x=>x.status===404);
+              const unsupported=await call(base+"/oauth/token","POST",new URLSearchParams({grant_type:"authorization_code",client_id:"bogus",code:"bogus",redirect_uri:"https://chatgpt.com/connector_platform_oauth_redirect",code_verifier:"bogus"}));
+              check(mode+" fabricated grant rejected",unsupported,x=>x.status===400||x.status===401);
+            }
+            const wrongRegistration=await call("/lab/dcr/oauth/register","POST",{token_endpoint_auth_method:"client_secret_basic",redirect_uris:["https://chatgpt.com/connector_platform_oauth_redirect"]});
+            check("DCR rejects confidential registration",wrongRegistration,x=>x.status===400);
+            const tokenNoAssertion=await call("/lab/cimd/oauth/token","POST",new URLSearchParams({grant_type:"authorization_code",client_id:"https://chatgpt.com/oauth/client.json",code:"x"}));
+            check("CIMD rejects missing signed assertion",tokenNoAssertion,x=>x.status===401);
+            const assertionBad=await call("/lab/cimd/oauth/token","POST",new URLSearchParams({grant_type:"authorization_code",client_id:"https://chatgpt.com/oauth/client.json",code:"x",client_assertion_type:"urn:ietf:params:oauth:client-assertion-type:jwt-bearer",client_assertion:"bad.jwt.signature"}));
+            check("CIMD rejects malformed signed assertion",assertionBad,x=>x.status===401);
+            const invalidURI=await call("/lab/static/oauth/authorize","GET");
+            check("Authorize rejects incomplete request",invalidURI,x=>x.status===400);
+            const noPKCE=await call("/lab/static/oauth/authorize?client_id=boundary-lab-static&response_type=code&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector_platform_oauth_redirect&resource="+encodeURIComponent(host+"/lab/static/mcp"));
+            check("Authorize requires PKCE",noPKCE,x=>x.status===400);
+            const wrongRes=await authorize("static","boundary-lab-static","verifier-".repeat(8),{resource:host+"/lab/dcr/mcp"});
+            record("Authorize rejects wrong resource",wrongRes.status===400,"HTTP "+wrongRes.status);
+            const wrongClient=await authorize("static","bad-client","verifier-".repeat(8));
+            record("Static rejects wrong client",wrongClient.status===400,"HTTP "+wrongClient.status);
+            const wrongRedirect=await authorize("static","boundary-lab-static","verifier-".repeat(8),{redirect_uri:"https://evil.example/collect"});
+            record("Static rejects arbitrary redirect",wrongRedirect.status===400,"HTTP "+wrongRedirect.status);
+            for(const [mode,client] of [["static","boundary-lab-static"],["dcr",dcrId]]){
+              if(!client){record(mode+" synthetic issuance",false,"missing client");continue;}
+              const verifier="boundary-synthetic-"+mode+"-"+"R".repeat(48);
+              const auth=await authorize(mode,client,verifier);
+              record(mode+" synthetic code issuance",auth.status===302&&!!auth.code,"HTTP "+auth.status);
+              if(!auth.code)continue;
+              const wrong=await exchange(mode,client,auth.code,verifier+"bad");
+              check(mode+" PKCE mismatch rejected",wrong,x=>x.status===400&&x.json?.error==="invalid_grant");
+              const wrongAudience=await exchange(mode,client,auth.code,verifier,{resource:host+"/lab/cimd/mcp"});
+              check(mode+" token exchange audience mismatch rejected",wrongAudience,x=>x.status===400&&x.json?.error==="invalid_target");
+              const issuedResult=await exchange(mode,client,auth.code,verifier);
+              check(mode+" correct token exchange",issuedResult,x=>x.status===200&&typeof x.json?.access_token==="string"&&typeof x.json?.refresh_token==="string");
+              if(!issuedResult.json?.access_token)continue;
+              issued[mode]={access:issuedResult.json.access_token,refresh:issuedResult.json.refresh_token};
+              const replay=await exchange(mode,client,auth.code,verifier);
+              check(mode+" authorization code replay denied",replay,x=>x.status===400&&x.json?.error==="invalid_grant");
+              const valid=await mcp(mode,"tools/call",{name:"lab_connection_info",arguments:{}},issued[mode].access);
+              check(mode+" synthetic token accepted at intended endpoint",valid,x=>x.status===200&&x.json?.result?.structuredContent?.authenticated===true);
+              for(const other of modes.filter(x=>x!==mode)){
+                const cross=await mcp(other,"tools/call",{name:"lab_connection_info",arguments:{}},issued[mode].access);
+                check(mode+" token denied at "+other,cross,x=>x.status===200&&x.json?.result?.isError===true);
+              }
+              const tamper=await call("/lab/"+mode+"/oauth/token","POST",new URLSearchParams({grant_type:"refresh_token",client_id:client,refresh_token:issued[mode].refresh,scope:"lab.admin"}));
+              check(mode+" refresh scope escalation rejected",tamper,x=>x.status===400&&x.json?.error==="invalid_scope");
+              const rotated=await call("/lab/"+mode+"/oauth/token","POST",new URLSearchParams({grant_type:"refresh_token",client_id:client,refresh_token:issued[mode].refresh,scope:"lab.read"}));
+              check(mode+" real refresh grant and rotation",rotated,x=>x.status===200&&typeof x.json?.refresh_token==="string"&&x.json.refresh_token!==issued[mode].refresh);
+              const old=await call("/lab/"+mode+"/oauth/token","POST",new URLSearchParams({grant_type:"refresh_token",client_id:client,refresh_token:issued[mode].refresh}));
+              check(mode+" old refresh token replay denied",old,x=>x.status===400&&x.json?.error==="invalid_grant");
+              const rotatedToken=rotated.json?.access_token;
+              if(rotatedToken){
+                const validRotated=await mcp(mode,"tools/call",{name:"lab_connection_info",arguments:{}},rotatedToken);
+                check(mode+" rotated access token valid",validRotated,x=>x.status===200&&x.json?.result?.structuredContent?.authenticated===true);
+              }
+            }
+            for(const mode of modes){
+              const title="MCP "+mode+" auth test";
+              const bad=await authorize(mode,mode==="static"?"boundary-lab-static":mode==="dcr"?dcrId:"https://chatgpt.com/oauth/client.json","V".repeat(48),{scope:"lab.read forbidden.test"});
+              record(mode+" unrecognized OAuth scopes rejected",bad.status===400,"HTTP "+bad.status);
+            }
+            const passes=cases.filter(x=>x.ok).length,failed=cases.filter(x=>!x.ok);
+            console.log("VALIDATION_SUMMARY "+JSON.stringify({total:cases.length,passed:passes,failed:failed.map(x=>({name:x.name,details:x.details}))}));
+            if(failed.length)process.exitCode=1;
+          }
+          await run();
+          NODE
