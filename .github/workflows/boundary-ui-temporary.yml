@@ -1,5 +1,5 @@
 name: Temporary Boundary UI smoke test
-on:
+'on':
   workflow_dispatch:
 permissions:
   contents: read
