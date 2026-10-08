@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: quintus-build-${{ github.ref }}-${{ inputs.snapshot || github.sha }}
+  group: vite-build-${{ github.ref }}-${{ inputs.snapshot || github.sha }}
   cancel-in-progress: true
 
 jobs:
