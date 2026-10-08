@@ -1,27 +1,37 @@
 name: Build validation
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: Optional snapshot identifier for deduplication
+        required: false
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: quintus-build-${{ github.ref }}-${{ inputs.snapshot || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: '24'
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm install --ignore-scripts --no-audit --no-fund
 
       - name: Build
         run: npm run build
@@ -38,3 +48,5 @@ jobs:
           name: vite-dist
           path: dist/
           if-no-files-found: error
+          retention-days: 1
+          compression-level: 6
